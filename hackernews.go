@@ -7,14 +7,9 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 )
 
-/*
-   url = "https://hacker-news.firebaseio.com/v0/item/" <> to_string(id) <> ".json"
-   url = "https://hacker-news.firebaseio.com/v0/topstories.json"
-*/
-
-var storyIds chan int
 var stories chan string
 var wg sync.WaitGroup
 
@@ -24,36 +19,32 @@ type Story struct {
 	URL   *string `json:"url,omitempty"`
 }
 
-func worker() {
-	for {
-		select {
-		case id := <-storyIds:
-			url := fmt.Sprintf("https://hacker-news.firebaseio.com/v0/item/%d.json", id)
-			rsp, err := http.Get(url)
-			if err != nil {
-				log.Fatalf("%s: %v", url, err)
-			}
-			body, err := ioutil.ReadAll(rsp.Body)
-			if err != nil {
-				log.Fatalf("%s: %v", url, err)
-			}
-			var story Story
-			err = json.Unmarshal(body, &story)
-			if err != nil {
-				log.Fatalf("%s: %v", url, err)
-			}
-			if story.Title != nil && story.URL != nil {
-				stories <- fmt.Sprintf("%s\n%s\n\n", *story.Title, *story.URL)
-			}
-		default:
-			wg.Done()
-			return
-		}
+func worker(id int) {
+	url := fmt.Sprintf("https://hacker-news.firebaseio.com/v0/item/%d.json", id)
+	rsp, err := http.Get(url)
+	if err != nil {
+		log.Fatalf("%s: %v", url, err)
 	}
+	body, err := ioutil.ReadAll(rsp.Body)
+	if err != nil {
+		log.Fatalf("%s: %v", url, err)
+	}
+	var story Story
+	err = json.Unmarshal(body, &story)
+	if err != nil {
+		log.Fatalf("%s: %v", url, err)
+	}
+	if story.Title != nil && story.URL != nil {
+		stories <- fmt.Sprintf("%s\n%s\n\n", *story.Title, *story.URL)
+	}
+	rsp.Body.Close()
+	wg.Done()
 }
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	start := time.Now()
 
 	rsp, err := http.Get("https://hacker-news.firebaseio.com/v0/topstories.json")
 	if err != nil {
@@ -65,8 +56,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var tmp []int
-	err = json.Unmarshal(body, &tmp)
+	var storyIds []int
+	err = json.Unmarshal(body, &storyIds)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -74,21 +65,19 @@ func main() {
 		fmt.Printf("%v - %v\n", story, idx)
 	}*/
 
-	wg.Add(len(tmp))
-	storyIds = make(chan int, len(tmp))
-	stories = make(chan string, len(tmp))
+	stories = make(chan string, len(storyIds))
 
-	for id := range tmp {
-		storyIds <- id
-		go worker()
+	wg.Add(len(storyIds))
+	for id := range storyIds {
+		go worker(id)
 	}
-
 	wg.Wait()
 
-	close(storyIds)
 	close(stories)
-
 	for story := range stories {
 		fmt.Println(story)
 	}
+
+	elapsed := time.Since(start)
+	fmt.Printf("Time elapsed: %s", elapsed)
 }
