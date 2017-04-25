@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -43,7 +44,10 @@ func worker(id int) {
 		log.Fatalf("%s: %v", url, err)
 	}
 	if story.Title != nil && story.URL != nil {
-		stories <- fmt.Sprintf("%s\n%s\n\n", *story.Title, *story.URL)
+		stories <- fmt.Sprintf(
+			"%s\n%s",
+			strings.TrimSpace(*story.Title),
+			strings.TrimSpace(*story.URL))
 	}
 	rsp.Body.Close()
 	wg.Done()
@@ -152,10 +156,16 @@ func main() {
 	w := bufio.NewWriter(fd)
 
 	close(stories)
-	for story := range stories {
+	for i := 0; i < len(stories)-1; i++ {
+		story := <-stories
+		story += "\n\n"
 		fmt.Println(story)
 		w.Write([]byte(story))
 	}
+	story := <-stories
+	story += "\n"
+	fmt.Println(story)
+	w.Write([]byte(story))
 
 	w.Flush()
 	fd.Close()
