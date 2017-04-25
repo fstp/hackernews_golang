@@ -1,11 +1,19 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
+	"os/user"
+	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -41,6 +49,51 @@ func worker(id int) {
 	wg.Done()
 }
 
+type intArray []uint64
+
+func (a intArray) Len() int           { return len(a) }
+func (a intArray) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a intArray) Less(i, j int) bool { return a[i] < a[j] }
+
+func needUpdate(storyIds intArray) bool {
+	var b bytes.Buffer
+	err := binary.Write(&b, binary.LittleEndian, storyIds)
+	if err != nil {
+		// Very unlikely that converting integer to byte array
+		// should fail, but we should check for it anyway.
+		log.Fatal(err)
+	}
+
+	usr, err := user.Current()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	checksumFile := filepath.Join(usr.HomeDir, "topstories.sha256")
+	newChecksum := sha256.Sum256(b.Bytes())
+	oldChecksum, err := ioutil.ReadFile(checksumFile)
+
+	if err != nil {
+		// If opening the file failed or if the file does not exist
+		// at all we just replace it with the new SHA256 and move on.
+		err := ioutil.WriteFile(checksumFile, newChecksum[:], 0644)
+		if err != nil {
+			log.Fatal(err)
+		}
+		return true
+	}
+
+	if !bytes.Equal(newChecksum[:], oldChecksum) {
+		err := ioutil.WriteFile(checksumFile, newChecksum[:], 0644)
+		if err != nil {
+			log.Fatal(err)
+		}
+		return true
+	}
+
+	return false
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
@@ -56,14 +109,33 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var storyIds []int
+	var storyIds intArray
 	err = json.Unmarshal(body, &storyIds)
 	if err != nil {
 		log.Fatal(err)
 	}
-	/*for story, idx := range storyIds {
-		fmt.Printf("%v - %v\n", story, idx)
-	}*/
+	sort.Sort(storyIds)
+
+	usr, err := user.Current()
+	if err != nil {
+		log.Fatal(err)
+	}
+	storiesTextfile := filepath.Join(usr.HomeDir, "topstories.txt")
+
+	if !needUpdate(storyIds) {
+		stories, err := ioutil.ReadFile(storiesTextfile)
+		if err == nil {
+			// Stories already present in cache that is up to date,
+			// nothing more to do than print it for the user.
+			fmt.Printf("%s", stories)
+
+			elapsed := time.Since(start)
+			fmt.Printf("Cache up to date, Time elapsed: %s", elapsed)
+			return
+		}
+		// Unable to read the textfile or it has been removed...
+		// continue since it will be replaced with new content anyway.
+	}
 
 	stories = make(chan string, len(storyIds))
 
@@ -73,11 +145,21 @@ func main() {
 	}
 	wg.Wait()
 
+	fd, err := os.OpenFile(storiesTextfile, os.O_WRONLY, 0222)
+	if err != nil {
+		log.Printf("failed to save stories to cache: %v", err)
+	}
+	w := bufio.NewWriter(fd)
+
 	close(stories)
 	for story := range stories {
 		fmt.Println(story)
+		w.Write([]byte(story))
 	}
 
+	w.Flush()
+	fd.Close()
+
 	elapsed := time.Since(start)
-	fmt.Printf("Time elapsed: %s", elapsed)
+	fmt.Printf("Downloaded stories from HackerNews, Time elapsed: %s", elapsed)
 }
